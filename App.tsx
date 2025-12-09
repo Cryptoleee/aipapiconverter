@@ -2,48 +2,88 @@ import React, { useState } from 'react';
 import { ImageUploader } from './components/ImageUploader';
 import { CropEditor } from './components/CropEditor';
 import { Button } from './components/Button';
-import { CropState, GeneratedFile } from './types';
-import { processExports } from './services/pdfService';
-import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer, Pencil } from 'lucide-react';
+import { CropState, GeneratedFile, BatchResult } from './types';
+import { processExports, generateZip } from './services/pdfService';
+import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer, Pencil, Layers, Archive } from 'lucide-react';
 
 function App() {
-  const [file, setFile] = useState<File | null>(null);
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [crop, setCrop] = useState<CropState>({ x: 0, y: 0, scale: 1 });
   const [editorLayoutWidth, setEditorLayoutWidth] = useState<number>(0);
-  const [customFilename, setCustomFilename] = useState<string>("");
+  
+  // Changed from single string to array of strings for individual naming
+  const [fileNames, setFileNames] = useState<string[]>([]);
   
   const [isProcessing, setIsProcessing] = useState(false);
-  const [results, setResults] = useState<GeneratedFile[] | null>(null);
+  const [results, setResults] = useState<BatchResult[] | null>(null);
 
-  const handleImageSelect = (selectedFile: File) => {
-    setFile(selectedFile);
-    // Set initial custom filename (strip extension)
-    const nameWithoutExt = selectedFile.name.substring(0, selectedFile.name.lastIndexOf('.')) || selectedFile.name;
-    setCustomFilename(nameWithoutExt);
+  const handleImageSelect = (selectedFiles: File[]) => {
+    setFiles(selectedFiles);
+    
+    // Initialize file names based on original filenames (stripping extension)
+    const initialNames = selectedFiles.map(f => 
+      f.name.substring(0, f.name.lastIndexOf('.')) || f.name
+    );
+    setFileNames(initialNames);
 
+    // Load first image for preview
     const reader = new FileReader();
     reader.onload = (e) => {
-      setImageSrc(e.target?.result as string);
+      setPreviewSrc(e.target?.result as string);
     };
-    reader.readAsDataURL(selectedFile);
+    reader.readAsDataURL(selectedFiles[0]);
     setResults(null);
   };
 
+  const handleNameChange = (index: number, newName: string) => {
+    const updatedNames = [...fileNames];
+    updatedNames[index] = newName;
+    setFileNames(updatedNames);
+  };
+
   const handleGenerate = async () => {
-    if (!imageSrc || !file || editorLayoutWidth === 0) return;
+    if (!previewSrc || files.length === 0 || editorLayoutWidth === 0) return;
     
     setIsProcessing(true);
     
+    // Use timeout to allow UI to show processing state
     setTimeout(async () => {
       try {
-        const img = new Image();
-        img.src = imageSrc;
-        await img.decode();
+        const batchResults: BatchResult[] = [];
+        const isBatch = files.length > 1;
 
-        const finalName = customFilename.trim() || "converted-image";
-        const generatedFiles = await processExports(img, crop, editorLayoutWidth, 0, finalName);
-        setResults(generatedFiles);
+        // Iterate through all files
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            
+            // Get the specific name for this file from state, or fallback to original
+            let baseName = fileNames[i]?.trim();
+            if (!baseName) {
+                baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+            }
+
+            // Load image for processing
+            const img = new Image();
+            // We need to read the file to a data URL to load it into an Image object
+            await new Promise<void>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    img.src = e.target?.result as string;
+                    resolve();
+                };
+                reader.readAsDataURL(file);
+            });
+            await img.decode();
+
+            const generatedFiles = await processExports(img, crop, editorLayoutWidth, 0, baseName);
+            batchResults.push({
+                originalName: baseName,
+                files: generatedFiles
+            });
+        }
+        
+        setResults(batchResults);
       } catch (error) {
         console.error("Processing failed", error);
         alert("An error occurred while generating the files.");
@@ -54,12 +94,12 @@ function App() {
   };
 
   const handleReset = () => {
-    setFile(null);
-    setImageSrc(null);
+    setFiles([]);
+    setPreviewSrc(null);
     setResults(null);
     setCrop({ x: 0, y: 0, scale: 1 });
     setEditorLayoutWidth(0);
-    setCustomFilename("");
+    setFileNames([]);
   };
 
   const downloadFile = (file: GeneratedFile) => {
@@ -70,6 +110,20 @@ function App() {
     a.click();
     document.body.removeChild(a);
   };
+
+  const downloadZip = async () => {
+    if (!results) return;
+    const blob = await generateZip(results);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = results.length > 1 ? "converted_batch.zip" : `${results[0].originalName}_bundle.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const isBatch = files.length > 1;
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 pb-20 selection:bg-brand-500 selection:text-white">
@@ -84,7 +138,7 @@ function App() {
               Ai Papi <span className="text-transparent bg-clip-text bg-gradient-orange">Converter</span>
             </h1>
           </div>
-          {imageSrc && (
+          {previewSrc && (
             <button 
               onClick={handleReset} 
               className="text-sm font-medium text-neutral-400 hover:text-red-400 transition-colors flex items-center gap-1"
@@ -97,7 +151,7 @@ function App() {
 
       <main className="max-w-5xl mx-auto px-6 py-8">
         
-        {!imageSrc ? (
+        {!previewSrc ? (
           // STEP 1: UPLOAD
           <div className="max-w-2xl mx-auto mt-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="text-center mb-10">
@@ -113,9 +167,9 @@ function App() {
                 desc="A1 & A2 formats with 3mm bleed included."
               />
                <FeatureCard 
-                icon={<ImageIcon className="w-6 h-6 text-brand-500" />}
-                title="High Res"
-                desc="Maintains 300 DPI for crisp printing quality."
+                icon={<Layers className="w-6 h-6 text-brand-500" />}
+                title="Batch Support"
+                desc="Upload multiple images and convert them all at once."
               />
                <FeatureCard 
                 icon={<FileText className="w-6 h-6 text-brand-500" />}
@@ -133,13 +187,18 @@ function App() {
                     <ImageIcon className="w-5 h-5 text-neutral-500" />
                     Adjust Position & Scale
                   </h3>
-                  <span className="text-xs font-medium px-2 py-1 bg-neutral-900 rounded text-neutral-400 border border-neutral-800">
+                  {isBatch && (
+                      <span className="text-xs font-medium px-3 py-1 bg-brand-500/10 text-brand-400 rounded-full border border-brand-500/20 animate-pulse">
+                        Batch Mode: Applying to {files.length} images
+                      </span>
+                  )}
+                  <span className="text-xs font-medium px-2 py-1 bg-neutral-900 rounded text-neutral-400 border border-neutral-800 ml-auto">
                     Previewing A1 (Full Bleed)
                   </span>
                </div>
                <div className="flex-1 min-h-0">
                   <CropEditor 
-                    imageSrc={imageSrc} 
+                    imageSrc={previewSrc} 
                     onCropChange={setCrop}
                     onLayoutChange={setEditorLayoutWidth}
                     initialCrop={crop}
@@ -147,26 +206,63 @@ function App() {
                </div>
             </div>
 
-            <div className="bg-neutral-900 rounded-2xl p-6 shadow-xl border border-neutral-800 h-fit lg:mt-11">
+            <div className="bg-neutral-900 rounded-2xl p-6 shadow-xl border border-neutral-800 h-fit lg:mt-11 flex flex-col">
               <h3 className="text-lg font-bold mb-6 text-white">Export Settings</h3>
               
-              <div className="mb-6">
-                <label htmlFor="filename" className="block text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">
-                  Output Filename
-                </label>
-                <div className="relative group">
-                    <input
-                      id="filename"
-                      type="text"
-                      value={customFilename}
-                      onChange={(e) => setCustomFilename(e.target.value)}
-                      className="w-full bg-neutral-950 border border-neutral-700 text-neutral-100 font-medium text-sm rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent block w-full pl-3 pr-10 py-2.5 placeholder-neutral-600 outline-none transition-all"
-                      placeholder="Enter file name"
-                    />
-                    <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-neutral-500">
-                        <Pencil className="w-4 h-4 opacity-50" />
-                    </div>
+              <div className="mb-6 flex-1 min-h-0 flex flex-col">
+                <div className="flex justify-between items-end mb-2">
+                    <label className="block text-xs font-semibold text-neutral-500 uppercase tracking-wider">
+                    {isBatch ? "File Names" : "Output Filename"}
+                    </label>
+                    {isBatch && (
+                        <span className="text-[10px] text-brand-400 font-medium bg-brand-500/10 px-1.5 py-0.5 rounded border border-brand-500/20">
+                            {files.length} Files
+                        </span>
+                    )}
                 </div>
+
+                {isBatch ? (
+                    /* Scrollable list for batch renaming */
+                    <div className="space-y-3 max-h-[240px] overflow-y-auto pr-2 -mr-2 pb-2 custom-scrollbar">
+                        {fileNames.map((name, idx) => (
+                            <div key={idx} className="group">
+                                <div className="flex justify-between mb-1">
+                                    <span className="text-[10px] text-neutral-500 truncate max-w-[80%] opacity-70">
+                                        Original: {files[idx].name}
+                                    </span>
+                                    <span className="text-[10px] text-neutral-600 font-mono">#{idx + 1}</span>
+                                </div>
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        value={name}
+                                        onChange={(e) => handleNameChange(idx, e.target.value)}
+                                        className="w-full bg-neutral-950 border border-neutral-700 text-neutral-100 font-medium text-sm rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent block pl-3 pr-8 py-2 placeholder-neutral-600 outline-none transition-all focus:bg-neutral-900"
+                                        placeholder={`Filename for image ${idx + 1}`}
+                                    />
+                                    <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-neutral-500">
+                                        <Pencil className="w-3.5 h-3.5 opacity-30" />
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    /* Single input for single file */
+                    <div className="relative group">
+                        <input
+                            id="filename"
+                            type="text"
+                            value={fileNames[0] || ""}
+                            onChange={(e) => handleNameChange(0, e.target.value)}
+                            className="w-full bg-neutral-950 border border-neutral-700 text-neutral-100 font-medium text-sm rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent block w-full pl-3 pr-10 py-2.5 placeholder-neutral-600 outline-none transition-all"
+                            placeholder="Enter file name"
+                        />
+                        <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-neutral-500">
+                            <Pencil className="w-4 h-4 opacity-50" />
+                        </div>
+                    </div>
+                )}
               </div>
               
               <div className="h-px bg-neutral-800 mb-6"></div>
@@ -183,7 +279,7 @@ function App() {
                 size="lg"
                 isLoading={isProcessing}
               >
-                Generate Files
+                {isBatch ? `Generate ${files.length} Sets` : 'Generate Files'}
               </Button>
               <p className="text-xs text-center text-neutral-500 mt-4">
                 Processing high-res images may take a few seconds.
@@ -195,40 +291,61 @@ function App() {
           <div className="max-w-2xl mx-auto mt-10 animate-in fade-in slide-in-from-bottom-8 duration-500">
             <div className="text-center mb-8">
               <div className="w-16 h-16 bg-gradient-to-br from-green-500/20 to-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/20">
-                <Download className="w-8 h-8" />
+                <Archive className="w-8 h-8" />
               </div>
-              <h2 className="text-3xl font-bold text-white">Files Ready!</h2>
-              <p className="text-neutral-400 mt-2">Your images have been processed and converted successfully.</p>
+              <h2 className="text-3xl font-bold text-white">Conversion Complete!</h2>
+              <p className="text-neutral-400 mt-2">
+                  {results.length} image{results.length > 1 ? 's' : ''} processed successfully.
+              </p>
             </div>
 
+            {/* Primary Action: ZIP Download */}
+            <div className="flex justify-center mb-8">
+                 <Button onClick={downloadZip} size="lg" className="w-full md:w-auto min-w-[250px] shadow-xl">
+                    <Download className="w-5 h-5 mr-2" />
+                    Download All as ZIP
+                 </Button>
+            </div>
+
+            {/* List of Files */}
             <div className="bg-neutral-900 rounded-2xl shadow-xl border border-neutral-800 overflow-hidden divide-y divide-neutral-800">
-              {results.map((file, idx) => (
-                <div key={idx} className="p-6 flex items-center justify-between hover:bg-neutral-800/50 transition-colors group">
-                  <div className="flex items-center gap-4">
-                    <div className={
-                      `w-12 h-12 rounded-lg flex items-center justify-center text-lg font-bold shadow-inner
-                      ${file.type === 'pdf' 
-                        ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' 
-                        : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'}`
-                    }>
-                      {file.type === 'pdf' ? 'PDF' : 'IMG'}
+              {results.map((batch, idx) => (
+                <div key={idx} className="p-0">
+                    {/* Header for Batch Item */}
+                    <div className="px-6 py-4 bg-neutral-800/30 flex items-center justify-between">
+                         <h4 className="font-semibold text-neutral-200 flex items-center gap-2">
+                             <span className="text-neutral-500 text-xs font-mono">#{idx + 1}</span>
+                             {batch.originalName}
+                         </h4>
                     </div>
-                    <div>
-                      <h4 className="font-semibold text-neutral-200">{file.name}</h4>
-                      <p className="text-sm text-neutral-500">{file.dimensions}</p>
+                    {/* Individual Files */}
+                    <div className="divide-y divide-neutral-800/50">
+                        {batch.files.map((file, fIdx) => (
+                            <div key={fIdx} className="px-6 py-3 flex items-center justify-between hover:bg-neutral-800/50 transition-colors group">
+                                <div className="flex items-center gap-3">
+                                    <div className={
+                                    `w-8 h-8 rounded flex items-center justify-center text-xs font-bold
+                                    ${file.type === 'pdf' 
+                                        ? 'bg-rose-500/10 text-rose-400' 
+                                        : 'bg-sky-500/10 text-sky-400'}`
+                                    }>
+                                    {file.type === 'pdf' ? 'PDF' : 'IMG'}
+                                    </div>
+                                    <span className="text-sm text-neutral-400">{file.name.split('_').slice(1).join(' ')}</span>
+                                </div>
+                                <Button variant="ghost" size="sm" onClick={() => downloadFile(file)} className="h-8 w-8 p-0">
+                                    <Download className="w-4 h-4" />
+                                </Button>
+                            </div>
+                        ))}
                     </div>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={() => downloadFile(file)}>
-                    <Download className="w-4 h-4 mr-2" />
-                    Download
-                  </Button>
                 </div>
               ))}
             </div>
 
-            <div className="mt-8 flex justify-center">
+            <div className="mt-8 flex justify-center pb-12">
               <Button variant="ghost" onClick={handleReset}>
-                Process Another Image
+                Process More Images
               </Button>
             </div>
           </div>

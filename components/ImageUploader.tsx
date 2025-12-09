@@ -1,9 +1,9 @@
 import React, { useRef, useState } from 'react';
-import { Upload } from 'lucide-react';
+import { Upload, Images } from 'lucide-react';
 import { clsx } from 'clsx';
 
 interface ImageUploaderProps {
-  onImageSelected: (file: File) => void;
+  onImageSelected: (files: File[]) => void;
 }
 
 export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageSelected }) => {
@@ -23,22 +23,29 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageSelected })
     e.preventDefault();
     setIsDragging(false);
     
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      validateAndProcess(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      validateAndProcess(e.dataTransfer.files);
     }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      validateAndProcess(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      validateAndProcess(e.target.files);
     }
   };
 
-  const validateAndProcess = (file: File) => {
-    if (file.type === 'image/jpeg' || file.type === 'image/png') {
-      onImageSelected(file);
+  const validateAndProcess = (fileList: FileList) => {
+    const validFiles: File[] = [];
+    Array.from(fileList).forEach(file => {
+      if (file.type === 'image/jpeg' || file.type === 'image/png') {
+        validFiles.push(file);
+      }
+    });
+
+    if (validFiles.length > 0) {
+      onImageSelected(validFiles);
     } else {
-      alert('Please upload a valid JPEG or PNG file.');
+      alert('Please upload valid JPEG or PNG files.');
     }
   };
 
@@ -60,6 +67,7 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageSelected })
         ref={inputRef}
         className="hidden"
         accept="image/png, image/jpeg"
+        multiple
         onChange={handleChange}
       />
       
@@ -70,14 +78,14 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageSelected })
             ? "bg-brand-500 text-white" 
             : "bg-neutral-800 text-neutral-400 group-hover:bg-neutral-700 group-hover:text-brand-400"
         )}>
-          <Upload className="w-8 h-8" />
+          {isDragging ? <Images className="w-8 h-8" /> : <Upload className="w-8 h-8" />}
         </div>
         <div className="space-y-1">
           <p className="text-lg font-semibold text-neutral-200 group-hover:text-white transition-colors">
-            Click or drag image here
+            Click or drag images here
           </p>
           <p className="text-sm text-neutral-500 group-hover:text-neutral-400 transition-colors">
-            Supports High-Res JPG or PNG
+            Supports batch upload • High-Res JPG or PNG
           </p>
         </div>
       </div>
