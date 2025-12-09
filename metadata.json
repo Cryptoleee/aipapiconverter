@@ -1,0 +1,5 @@
+{
+  "name": "Ai Papi Converter",
+  "description": "A high-fidelity tool to convert images into A1/A2 PDFs with bleed and optimized WebP formats.",
+  "requestFramePermissions": []
+}
