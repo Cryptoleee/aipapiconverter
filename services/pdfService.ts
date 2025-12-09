@@ -125,9 +125,9 @@ export const processExports = async (
   crop: CropState,
   referenceWidthPx: number, // PASSED FROM EDITOR LAYOUT
   _unusedHeight: number,    // Deprecated
-  filename: string
+  baseFilename: string
 ): Promise<GeneratedFile[]> => {
-  const baseName = filename.substring(0, filename.lastIndexOf('.')) || filename;
+  const baseName = baseFilename;
   const results: GeneratedFile[] = [];
 
   // --- 1. Generate A1 PDF ---

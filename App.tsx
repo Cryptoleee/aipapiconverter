@@ -4,19 +4,24 @@ import { CropEditor } from './components/CropEditor';
 import { Button } from './components/Button';
 import { CropState, GeneratedFile } from './types';
 import { processExports } from './services/pdfService';
-import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer } from 'lucide-react';
+import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer, Pencil } from 'lucide-react';
 
 function App() {
   const [file, setFile] = useState<File | null>(null);
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [crop, setCrop] = useState<CropState>({ x: 0, y: 0, scale: 1 });
   const [editorLayoutWidth, setEditorLayoutWidth] = useState<number>(0);
+  const [customFilename, setCustomFilename] = useState<string>("");
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [results, setResults] = useState<GeneratedFile[] | null>(null);
 
   const handleImageSelect = (selectedFile: File) => {
     setFile(selectedFile);
+    // Set initial custom filename (strip extension)
+    const nameWithoutExt = selectedFile.name.substring(0, selectedFile.name.lastIndexOf('.')) || selectedFile.name;
+    setCustomFilename(nameWithoutExt);
+
     const reader = new FileReader();
     reader.onload = (e) => {
       setImageSrc(e.target?.result as string);
@@ -36,7 +41,8 @@ function App() {
         img.src = imageSrc;
         await img.decode();
 
-        const generatedFiles = await processExports(img, crop, editorLayoutWidth, 0, file.name);
+        const finalName = customFilename.trim() || "converted-image";
+        const generatedFiles = await processExports(img, crop, editorLayoutWidth, 0, finalName);
         setResults(generatedFiles);
       } catch (error) {
         console.error("Processing failed", error);
@@ -53,6 +59,7 @@ function App() {
     setResults(null);
     setCrop({ x: 0, y: 0, scale: 1 });
     setEditorLayoutWidth(0);
+    setCustomFilename("");
   };
 
   const downloadFile = (file: GeneratedFile) => {
@@ -141,13 +148,32 @@ function App() {
             </div>
 
             <div className="bg-neutral-900 rounded-2xl p-6 shadow-xl border border-neutral-800 h-fit lg:mt-11">
-              <h3 className="text-lg font-bold mb-6 text-white">Export Summary</h3>
+              <h3 className="text-lg font-bold mb-6 text-white">Export Settings</h3>
               
+              <div className="mb-6">
+                <label htmlFor="filename" className="block text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">
+                  Output Filename
+                </label>
+                <div className="relative group">
+                    <input
+                      id="filename"
+                      type="text"
+                      value={customFilename}
+                      onChange={(e) => setCustomFilename(e.target.value)}
+                      className="w-full bg-neutral-950 border border-neutral-700 text-neutral-100 font-medium text-sm rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent block w-full pl-3 pr-10 py-2.5 placeholder-neutral-600 outline-none transition-all"
+                      placeholder="Enter file name"
+                    />
+                    <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-neutral-500">
+                        <Pencil className="w-4 h-4 opacity-50" />
+                    </div>
+                </div>
+              </div>
+              
+              <div className="h-px bg-neutral-800 mb-6"></div>
+
               <div className="space-y-4 mb-8">
-                <SpecItem label="Source File" value={file?.name || 'Unknown'} />
-                <div className="h-px bg-neutral-800 my-2"></div>
-                <SpecItem label="Output 1" value="PDF A1 (60x84.7cm) + 3mm Bleed" sub="300 DPI • CMYK Ready" />
-                <SpecItem label="Output 2" value="PDF A2 (42.6x60cm) + 3mm Bleed" sub="300 DPI • CMYK Ready" />
+                <SpecItem label="Output 1" value="PDF A1 (60x84.7cm)" sub="300 DPI • 3mm Bleed" />
+                <SpecItem label="Output 2" value="PDF A2 (42.6x60cm)" sub="300 DPI • 3mm Bleed" />
                 <SpecItem label="Output 3" value="WebP (912x1296px)" sub="Optimized for web" />
               </div>
 
