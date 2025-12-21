@@ -28,6 +28,8 @@ function App() {
     setFileNames(initialNames);
 
     // Load first image for preview
+    // Use FileReader for the preview (usually smaller/resized by browser for display, but here we just load it)
+    // For the actual processing we will use ObjectURL to save memory
     const reader = new FileReader();
     reader.onload = (e) => {
       setPreviewSrc(e.target?.result as string);
@@ -63,30 +65,32 @@ function App() {
                 baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
             }
 
-            // Load image for processing
+            // Load image for processing using ObjectURL (Much more memory efficient for large files than Base64)
+            const objectUrl = URL.createObjectURL(file);
             const img = new Image();
-            // We need to read the file to a data URL to load it into an Image object
-            await new Promise<void>((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    img.src = e.target?.result as string;
-                    resolve();
-                };
-                reader.readAsDataURL(file);
+            
+            await new Promise<void>((resolve, reject) => {
+                img.onload = () => resolve();
+                img.onerror = (e) => reject(e);
+                img.src = objectUrl;
             });
-            await img.decode();
 
-            const generatedFiles = await processExports(img, crop, editorLayoutWidth, 0, baseName);
-            batchResults.push({
-                originalName: baseName,
-                files: generatedFiles
-            });
+            try {
+                const generatedFiles = await processExports(img, crop, editorLayoutWidth, 0, baseName);
+                batchResults.push({
+                    originalName: baseName,
+                    files: generatedFiles
+                });
+            } finally {
+                // Clean up memory immediately after processing this image
+                URL.revokeObjectURL(objectUrl);
+            }
         }
         
         setResults(batchResults);
       } catch (error) {
         console.error("Processing failed", error);
-        alert("An error occurred while generating the files.");
+        alert("An error occurred while generating the files. The image might be too large for the browser to handle.");
       } finally {
         setIsProcessing(false);
       }

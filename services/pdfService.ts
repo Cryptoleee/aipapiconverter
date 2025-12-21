@@ -4,7 +4,7 @@ import { CropState, DPI_300_PPCM, SPECS, GeneratedFile, BatchResult } from '../t
 
 /**
  * Creates an off-screen canvas, draws the cropped image at high resolution,
- * and returns the data URL.
+ * and returns the data as Uint8Array (to avoid large Base64 strings in memory).
  */
 const generateHighResCanvas = (
   image: HTMLImageElement,
@@ -12,14 +12,17 @@ const generateHighResCanvas = (
   targetWidthPx: number,
   targetHeightPx: number,
   referenceWidthPx: number // The width of the "safe zone" or "bleed box" in the preview
-): Promise<string> => {
-  return new Promise((resolve) => {
+): Promise<Uint8Array> => {
+  return new Promise((resolve, reject) => {
     const canvas = document.createElement('canvas');
     canvas.width = targetWidthPx;
     canvas.height = targetHeightPx;
     const ctx = canvas.getContext('2d');
 
-    if (!ctx) throw new Error('Could not get canvas context');
+    if (!ctx) {
+        reject(new Error('Could not get canvas context'));
+        return;
+    }
 
     // Quality settings
     ctx.imageSmoothingEnabled = true;
@@ -52,8 +55,28 @@ const generateHighResCanvas = (
     // Draw the image
     ctx.drawImage(image, drawX, drawY, scaledImageWidth, scaledImageHeight);
 
-    // Return as JPEG for PDF (standard compression)
-    resolve(canvas.toDataURL('image/jpeg', 0.95));
+    // Optimize: Convert to Blob -> ArrayBuffer -> Uint8Array
+    // This bypasses strict string length limits associated with .toDataURL() base64 strings
+    canvas.toBlob(
+        (blob) => {
+            if (!blob) {
+                reject(new Error('Canvas to Blob failed'));
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+                if (reader.result instanceof ArrayBuffer) {
+                    resolve(new Uint8Array(reader.result));
+                } else {
+                    reject(new Error('Failed to convert blob to array buffer'));
+                }
+            };
+            reader.onerror = () => reject(new Error('FileReader error during canvas export'));
+            reader.readAsArrayBuffer(blob);
+        },
+        'image/jpeg',
+        0.95
+    );
   });
 };
 
@@ -120,7 +143,7 @@ export const processExports = async (
   const a1WidthPx = Math.ceil(a1TotalWidthCm * DPI_300_PPCM);
   const a1HeightPx = Math.ceil(a1TotalHeightCm * DPI_300_PPCM);
 
-  const a1DataUrl = await generateHighResCanvas(image, crop, a1WidthPx, a1HeightPx, referenceWidthPx);
+  const a1Data = await generateHighResCanvas(image, crop, a1WidthPx, a1HeightPx, referenceWidthPx);
   
   const pdfA1 = new jsPDF({
     orientation: 'p',
@@ -129,7 +152,8 @@ export const processExports = async (
     compress: true
   });
   
-  pdfA1.addImage(a1DataUrl, 'JPEG', 0, 0, a1TotalWidthCm, a1TotalHeightCm, undefined, 'FAST');
+  // Passed as Uint8Array, type 'JPEG'
+  pdfA1.addImage(a1Data, 'JPEG', 0, 0, a1TotalWidthCm, a1TotalHeightCm, undefined, 'FAST');
   
   results.push({
     name: `${baseName}_A1.pdf`,
@@ -147,7 +171,7 @@ export const processExports = async (
   const a2WidthPx = Math.ceil(a2TotalWidthCm * DPI_300_PPCM);
   const a2HeightPx = Math.ceil(a2TotalHeightCm * DPI_300_PPCM);
 
-  const a2DataUrl = await generateHighResCanvas(image, crop, a2WidthPx, a2HeightPx, referenceWidthPx);
+  const a2Data = await generateHighResCanvas(image, crop, a2WidthPx, a2HeightPx, referenceWidthPx);
 
   const pdfA2 = new jsPDF({
     orientation: 'p',
@@ -156,7 +180,7 @@ export const processExports = async (
     compress: true
   });
 
-  pdfA2.addImage(a2DataUrl, 'JPEG', 0, 0, a2TotalWidthCm, a2TotalHeightCm, undefined, 'FAST');
+  pdfA2.addImage(a2Data, 'JPEG', 0, 0, a2TotalWidthCm, a2TotalHeightCm, undefined, 'FAST');
 
   results.push({
     name: `${baseName}_A2.pdf`,
