@@ -15,11 +15,19 @@ export interface GeneratedFile {
   url: string;
   type: 'pdf' | 'webp';
   dimensions: string;
+  sizeDisplay?: string; // formatted size info e.g. "1.2MB -> 500KB (-50%)"
 }
 
 export interface BatchResult {
   originalName: string;
   files: GeneratedFile[];
+}
+
+export interface ExportOptions {
+  includePdf: boolean;      // A1 & A2 PDFs
+  includeWebpFixed: boolean; // 912x1296 Crop
+  includeResize: boolean;    // Custom Resize
+  resizeScale: number;      // 1-100 percentage
 }
 
 // 300 DPI conversion factor (Pixels per CM)

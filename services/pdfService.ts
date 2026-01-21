@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import JSZip from 'jszip';
-import { CropState, DPI_300_PPCM, SPECS, GeneratedFile, BatchResult } from '../types';
+import { CropState, DPI_300_PPCM, SPECS, GeneratedFile, BatchResult, ExportOptions } from '../types';
 
 /**
  * Creates an off-screen canvas, draws the cropped image at high resolution,
@@ -124,81 +124,163 @@ const generateWebPCanvas = (
   });
 };
 
+/**
+ * Resizes the original image (ignoring crop) to a specific percentage scale.
+ * Output is WebP at 0.85 quality.
+ */
+const generateResizedWebP = (
+    image: HTMLImageElement,
+    scalePercentage: number
+): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+        // Calculate new dimensions
+        // scalePercentage is 1-100
+        const scale = Math.max(1, Math.min(100, scalePercentage)) / 100;
+        const targetWidth = Math.round(image.naturalWidth * scale);
+        const targetHeight = Math.round(image.naturalHeight * scale);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext('2d');
+
+        if (!ctx) return reject('No Context');
+
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        // Draw original image scaled
+        ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+        // Export as WebP, Quality 0.85 (Lossy)
+        canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject('Blob creation failed');
+        }, 'image/webp', 0.85);
+    });
+}
+
+function formatBytes(bytes: number, decimals = 1) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
 export const processExports = async (
   image: HTMLImageElement,
   crop: CropState,
   referenceWidthPx: number, // PASSED FROM EDITOR LAYOUT
-  _unusedHeight: number,    // Deprecated
-  baseFilename: string
+  baseFilename: string,
+  options: ExportOptions,
+  originalFileSize: number = 0
 ): Promise<GeneratedFile[]> => {
   const baseName = baseFilename;
   const results: GeneratedFile[] = [];
 
   // --- 1. Generate A1 PDF ---
-  // A1 Dimensions in CM + Bleed
-  const a1BleedCm = SPECS.A1.bleedMm / 10;
-  const a1TotalWidthCm = SPECS.A1.widthCm + (a1BleedCm * 2);
-  const a1TotalHeightCm = SPECS.A1.heightCm + (a1BleedCm * 2);
-  
-  const a1WidthPx = Math.ceil(a1TotalWidthCm * DPI_300_PPCM);
-  const a1HeightPx = Math.ceil(a1TotalHeightCm * DPI_300_PPCM);
+  if (options.includePdf) {
+    const a1BleedCm = SPECS.A1.bleedMm / 10;
+    const a1TotalWidthCm = SPECS.A1.widthCm + (a1BleedCm * 2);
+    const a1TotalHeightCm = SPECS.A1.heightCm + (a1BleedCm * 2);
+    
+    const a1WidthPx = Math.ceil(a1TotalWidthCm * DPI_300_PPCM);
+    const a1HeightPx = Math.ceil(a1TotalHeightCm * DPI_300_PPCM);
 
-  const a1Data = await generateHighResCanvas(image, crop, a1WidthPx, a1HeightPx, referenceWidthPx);
-  
-  const pdfA1 = new jsPDF({
-    orientation: 'p',
-    unit: 'cm',
-    format: [a1TotalWidthCm, a1TotalHeightCm],
-    compress: true
-  });
-  
-  // Passed as Uint8Array, type 'JPEG'
-  pdfA1.addImage(a1Data, 'JPEG', 0, 0, a1TotalWidthCm, a1TotalHeightCm, undefined, 'FAST');
-  
-  results.push({
-    name: `${baseName}_A1.pdf`,
-    blob: pdfA1.output('blob'),
-    url: URL.createObjectURL(pdfA1.output('blob')),
-    type: 'pdf',
-    dimensions: '60 x 84.7 cm (incl. 3mm bleed)'
-  });
+    const a1Data = await generateHighResCanvas(image, crop, a1WidthPx, a1HeightPx, referenceWidthPx);
+    
+    const pdfA1 = new jsPDF({
+        orientation: 'p',
+        unit: 'cm',
+        format: [a1TotalWidthCm, a1TotalHeightCm],
+        compress: true
+    });
+    
+    pdfA1.addImage(a1Data, 'JPEG', 0, 0, a1TotalWidthCm, a1TotalHeightCm, undefined, 'FAST');
+    const blob = pdfA1.output('blob');
 
-  // --- 2. Generate A2 PDF ---
-  const a2BleedCm = SPECS.A2.bleedMm / 10;
-  const a2TotalWidthCm = SPECS.A2.widthCm + (a2BleedCm * 2);
-  const a2TotalHeightCm = SPECS.A2.heightCm + (a2BleedCm * 2);
+    results.push({
+        name: `${baseName}_A1.pdf`,
+        blob: blob,
+        url: URL.createObjectURL(blob),
+        type: 'pdf',
+        dimensions: '60 x 84.7 cm (incl. 3mm bleed)',
+        sizeDisplay: formatBytes(blob.size)
+    });
 
-  const a2WidthPx = Math.ceil(a2TotalWidthCm * DPI_300_PPCM);
-  const a2HeightPx = Math.ceil(a2TotalHeightCm * DPI_300_PPCM);
+    // --- 2. Generate A2 PDF ---
+    const a2BleedCm = SPECS.A2.bleedMm / 10;
+    const a2TotalWidthCm = SPECS.A2.widthCm + (a2BleedCm * 2);
+    const a2TotalHeightCm = SPECS.A2.heightCm + (a2BleedCm * 2);
 
-  const a2Data = await generateHighResCanvas(image, crop, a2WidthPx, a2HeightPx, referenceWidthPx);
+    const a2WidthPx = Math.ceil(a2TotalWidthCm * DPI_300_PPCM);
+    const a2HeightPx = Math.ceil(a2TotalHeightCm * DPI_300_PPCM);
 
-  const pdfA2 = new jsPDF({
-    orientation: 'p',
-    unit: 'cm',
-    format: [a2TotalWidthCm, a2TotalHeightCm],
-    compress: true
-  });
+    const a2Data = await generateHighResCanvas(image, crop, a2WidthPx, a2HeightPx, referenceWidthPx);
 
-  pdfA2.addImage(a2Data, 'JPEG', 0, 0, a2TotalWidthCm, a2TotalHeightCm, undefined, 'FAST');
+    const pdfA2 = new jsPDF({
+        orientation: 'p',
+        unit: 'cm',
+        format: [a2TotalWidthCm, a2TotalHeightCm],
+        compress: true
+    });
 
-  results.push({
-    name: `${baseName}_A2.pdf`,
-    blob: pdfA2.output('blob'),
-    url: URL.createObjectURL(pdfA2.output('blob')),
-    type: 'pdf',
-    dimensions: '42.6 x 60 cm (incl. 3mm bleed)'
-  });
+    pdfA2.addImage(a2Data, 'JPEG', 0, 0, a2TotalWidthCm, a2TotalHeightCm, undefined, 'FAST');
+    const blobA2 = pdfA2.output('blob');
 
-  // --- 3. Generate WebP ---
-  const webpBlob = await generateWebPCanvas(image, crop, referenceWidthPx);
-  results.push({
-    name: `${baseName}_web.webp`,
-    blob: webpBlob,
-    url: URL.createObjectURL(webpBlob),
-    type: 'webp',
-    dimensions: '912 x 1296 px'
-  });
+    results.push({
+        name: `${baseName}_A2.pdf`,
+        blob: blobA2,
+        url: URL.createObjectURL(blobA2),
+        type: 'pdf',
+        dimensions: '42.6 x 60 cm (incl. 3mm bleed)',
+        sizeDisplay: formatBytes(blobA2.size)
+    });
+  }
+
+  // --- 3. Generate Fixed WebP (Cropped) ---
+  if (options.includeWebpFixed) {
+      const webpBlob = await generateWebPCanvas(image, crop, referenceWidthPx);
+      results.push({
+        name: `${baseName}_web.webp`,
+        blob: webpBlob,
+        url: URL.createObjectURL(webpBlob),
+        type: 'webp',
+        dimensions: '912 x 1296 px',
+        sizeDisplay: formatBytes(webpBlob.size)
+      });
+  }
+
+  // --- 4. Generate Resized Original (Scaled) ---
+  if (options.includeResize) {
+      const resizedBlob = await generateResizedWebP(image, options.resizeScale);
+      
+      // Calculate resulting dimensions for display
+      const scale = options.resizeScale / 100;
+      const w = Math.round(image.naturalWidth * scale);
+      const h = Math.round(image.naturalHeight * scale);
+      
+      let sizeText = formatBytes(resizedBlob.size);
+      
+      // If we know original size, show comparison
+      if (originalFileSize > 0) {
+          const savings = originalFileSize - resizedBlob.size;
+          const percentSaved = Math.round((savings / originalFileSize) * 100);
+          const arrow = savings > 0 ? '↓' : '↑';
+          sizeText = `${formatBytes(originalFileSize)} → ${formatBytes(resizedBlob.size)} (${arrow}${percentSaved}%)`;
+      }
+
+      results.push({
+          name: `${baseName}_small.webp`,
+          blob: resizedBlob,
+          url: URL.createObjectURL(resizedBlob),
+          type: 'webp',
+          dimensions: `${w} x ${h} px`,
+          sizeDisplay: sizeText
+      });
+  }
 
   return results;
 };
