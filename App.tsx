@@ -1,15 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ImageUploader } from './components/ImageUploader';
 import { CropEditor } from './components/CropEditor';
 import { Button } from './components/Button';
 import { CropState, GeneratedFile, BatchResult, ExportOptions } from './types';
 import { processExports, generateZip } from './services/pdfService';
-import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer, Pencil, Layers, Archive, Settings2, CheckSquare, Square } from 'lucide-react';
+import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer, Pencil, Layers, Archive, Settings2, CheckSquare, Square, ChevronLeft, ChevronRight } from 'lucide-react';
 
 function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-  const [crop, setCrop] = useState<CropState>({ x: 0, y: 0, scale: 1 });
+  
+  // State for batch management
+  const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [crops, setCrops] = useState<CropState[]>([]);
+  const [currentImgDims, setCurrentImgDims] = useState<{width: number, height: number} | null>(null);
+
   const [editorLayoutWidth, setEditorLayoutWidth] = useState<number>(0);
   
   // Output Configuration State
@@ -20,7 +25,6 @@ function App() {
       resizeScale: 50
   });
 
-  // Changed from single string to array of strings for individual naming
   const [fileNames, setFileNames] = useState<string[]>([]);
   
   const [isProcessing, setIsProcessing] = useState(false);
@@ -29,24 +33,66 @@ function App() {
   // Helper to determine if we are in "Resize Only" mode
   const onlyResize = exportOptions.includeResize && !exportOptions.includePdf && !exportOptions.includeWebpFixed;
 
+  // Helper to load image for preview and get dimensions
+  const loadImageForPreview = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const src = e.target?.result as string;
+      setPreviewSrc(src);
+      
+      // Get dimensions for resize calculator
+      const img = new Image();
+      img.onload = () => {
+        setCurrentImgDims({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+      img.src = src;
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleImageSelect = (selectedFiles: File[]) => {
     setFiles(selectedFiles);
     
-    // Initialize file names based on original filenames (stripping extension)
+    // Initialize file names
     const initialNames = selectedFiles.map(f => 
       f.name.substring(0, f.name.lastIndexOf('.')) || f.name
     );
     setFileNames(initialNames);
 
-    // Load first image for preview
-    // Use FileReader for the preview (usually smaller/resized by browser for display, but here we just load it)
-    // For the actual processing we will use ObjectURL to save memory
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setPreviewSrc(e.target?.result as string);
-    };
-    reader.readAsDataURL(selectedFiles[0]);
+    // Initialize crops for all files
+    const initialCrops = selectedFiles.map(() => ({ x: 0, y: 0, scale: 1 }));
+    setCrops(initialCrops);
+
+    // Set first file active
+    setCurrentFileIndex(0);
+    loadImageForPreview(selectedFiles[0]);
+    
     setResults(null);
+  };
+
+  const handleNextImage = () => {
+    if (currentFileIndex < files.length - 1) {
+      const newIndex = currentFileIndex + 1;
+      setCurrentFileIndex(newIndex);
+      loadImageForPreview(files[newIndex]);
+    }
+  };
+
+  const handlePrevImage = () => {
+    if (currentFileIndex > 0) {
+      const newIndex = currentFileIndex - 1;
+      setCurrentFileIndex(newIndex);
+      loadImageForPreview(files[newIndex]);
+    }
+  };
+
+  // Update crop for the CURRENT file index
+  const handleCropChange = (newCrop: CropState) => {
+    setCrops(prev => {
+      const newCrops = [...prev];
+      newCrops[currentFileIndex] = newCrop;
+      return newCrops;
+    });
   };
 
   const handleNameChange = (index: number, newName: string) => {
@@ -56,12 +102,10 @@ function App() {
   };
 
   const handleGenerate = async () => {
-    // If only resizing, we don't need the editorLayoutWidth
     const isLayoutNeeded = !onlyResize;
     
     if (!previewSrc || files.length === 0 || (isLayoutNeeded && editorLayoutWidth === 0)) return;
     
-    // Validate that at least one output is selected
     if (!exportOptions.includePdf && !exportOptions.includeWebpFixed && !exportOptions.includeResize) {
         alert("Please select at least one output format.");
         return;
@@ -69,23 +113,19 @@ function App() {
 
     setIsProcessing(true);
     
-    // Use timeout to allow UI to show processing state
     setTimeout(async () => {
       try {
         const batchResults: BatchResult[] = [];
-        const isBatch = files.length > 1;
 
         // Iterate through all files
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             
-            // Get the specific name for this file from state, or fallback to original
             let baseName = fileNames[i]?.trim();
             if (!baseName) {
                 baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
             }
 
-            // Load image for processing using ObjectURL (Much more memory efficient for large files than Base64)
             const objectUrl = URL.createObjectURL(file);
             const img = new Image();
             
@@ -96,15 +136,23 @@ function App() {
             });
 
             try {
-                // Pass options to processExports
-                // Added file.size to calculate size reduction stats
-                const generatedFiles = await processExports(img, crop, editorLayoutWidth, baseName, exportOptions, file.size);
+                // Use the SPECIFIC crop for this file index
+                const fileCrop = crops[i];
+                
+                const generatedFiles = await processExports(
+                    img, 
+                    fileCrop, 
+                    editorLayoutWidth, 
+                    baseName, 
+                    exportOptions, 
+                    file.size
+                );
+                
                 batchResults.push({
                     originalName: baseName,
                     files: generatedFiles
                 });
             } finally {
-                // Clean up memory immediately after processing this image
                 URL.revokeObjectURL(objectUrl);
             }
         }
@@ -112,7 +160,7 @@ function App() {
         setResults(batchResults);
       } catch (error) {
         console.error("Processing failed", error);
-        alert("An error occurred while generating the files. The image might be too large for the browser to handle.");
+        alert("An error occurred while generating the files.");
       } finally {
         setIsProcessing(false);
       }
@@ -123,9 +171,11 @@ function App() {
     setFiles([]);
     setPreviewSrc(null);
     setResults(null);
-    setCrop({ x: 0, y: 0, scale: 1 });
+    setCrops([]);
+    setCurrentFileIndex(0);
     setEditorLayoutWidth(0);
     setFileNames([]);
+    setCurrentImgDims(null);
   };
 
   const downloadFile = (file: GeneratedFile) => {
@@ -151,12 +201,20 @@ function App() {
 
   const isBatch = files.length > 1;
 
-  // Toggle helpers
   const toggleOption = (key: keyof ExportOptions) => {
       setExportOptions(prev => ({
           ...prev,
           [key]: !prev[key]
       }));
+  };
+
+  // Calculate dynamic resize dimensions
+  const getResizeDimensions = () => {
+    if (!currentImgDims) return '';
+    const scale = exportOptions.resizeScale / 100;
+    const w = Math.round(currentImgDims.width * scale);
+    const h = Math.round(currentImgDims.height * scale);
+    return `${w} x ${h} px`;
   };
 
   return (
@@ -221,12 +279,30 @@ function App() {
                     <ImageIcon className="w-5 h-5 text-neutral-500" />
                     {onlyResize ? "Image Preview" : "Adjust Position & Scale"}
                   </h3>
+                  
                   {isBatch && (
-                      <span className="text-xs font-medium px-3 py-1 bg-brand-500/10 text-brand-400 rounded-full border border-brand-500/20 animate-pulse">
-                        Batch Mode: Applying to {files.length} images
+                    <div className="flex items-center gap-2 bg-neutral-900 rounded-full border border-neutral-800 p-1">
+                      <button 
+                        onClick={handlePrevImage}
+                        disabled={currentFileIndex === 0}
+                        className="p-1 hover:bg-neutral-800 text-neutral-400 disabled:opacity-30 rounded-full transition-colors"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-xs font-mono text-neutral-400 w-16 text-center">
+                        {currentFileIndex + 1} / {files.length}
                       </span>
+                      <button 
+                        onClick={handleNextImage}
+                        disabled={currentFileIndex === files.length - 1}
+                        className="p-1 hover:bg-neutral-800 text-neutral-400 disabled:opacity-30 rounded-full transition-colors"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
                   )}
-                  {!onlyResize && (
+
+                  {!onlyResize && !isBatch && (
                     <span className="text-xs font-medium px-2 py-1 bg-neutral-900 rounded text-neutral-400 border border-neutral-800 ml-auto">
                         Previewing A1 (Full Bleed)
                     </span>
@@ -248,9 +324,9 @@ function App() {
                   ) : (
                       <CropEditor 
                         imageSrc={previewSrc} 
-                        onCropChange={setCrop}
+                        onCropChange={handleCropChange}
                         onLayoutChange={setEditorLayoutWidth}
-                        initialCrop={crop}
+                        initialCrop={crops[currentFileIndex]}
                       />
                   )}
                </div>
@@ -276,17 +352,23 @@ function App() {
                 {isBatch ? (
                     <div className="space-y-3 mb-8">
                         {fileNames.map((name, idx) => (
-                            <div key={idx} className="group">
+                            <div key={idx} className={`group ${currentFileIndex === idx ? 'ring-1 ring-brand-500/30 rounded-lg p-1 -m-1 bg-brand-500/5' : ''}`}>
                                 <div className="flex justify-between mb-1">
                                     <span className="text-[10px] text-neutral-500 truncate max-w-[80%] opacity-70">
                                         Original: {files[idx].name}
                                     </span>
-                                    <span className="text-[10px] text-neutral-600 font-mono">#{idx + 1}</span>
+                                    <span className={`text-[10px] font-mono ${currentFileIndex === idx ? 'text-brand-500' : 'text-neutral-600'}`}>
+                                      #{idx + 1}
+                                    </span>
                                 </div>
                                 <div className="relative">
                                     <input
                                         type="text"
                                         value={name}
+                                        onFocus={() => {
+                                          setCurrentFileIndex(idx);
+                                          loadImageForPreview(files[idx]);
+                                        }}
                                         onChange={(e) => handleNameChange(idx, e.target.value)}
                                         className="w-full bg-neutral-950 border border-neutral-700 text-neutral-100 font-medium text-sm rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent block pl-3 pr-8 py-2 placeholder-neutral-600 outline-none transition-all focus:bg-neutral-900"
                                         placeholder={`Filename for image ${idx + 1}`}
@@ -375,7 +457,10 @@ function App() {
                             <div className="mt-4 pl-8 pr-1 animate-in fade-in slide-in-from-top-1 duration-200">
                                 <div className="flex justify-between items-center mb-2">
                                     <span className="text-xs text-neutral-400">Scale Percentage</span>
-                                    <span className="text-xs font-mono font-medium text-brand-400">{exportOptions.resizeScale}%</span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] text-neutral-500 font-mono">{getResizeDimensions()}</span>
+                                      <span className="text-xs font-mono font-medium text-brand-400">{exportOptions.resizeScale}%</span>
+                                    </div>
                                 </div>
                                 <input 
                                     type="range" 
