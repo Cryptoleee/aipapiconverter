@@ -4,11 +4,12 @@ import { CropEditor } from './components/CropEditor';
 import { Button } from './components/Button';
 import { CropState, GeneratedFile, BatchResult, ExportOptions } from './types';
 import { processExports, generateZip } from './services/pdfService';
-import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer, Pencil, Layers, Archive, Settings2, CheckSquare, Square, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Download, FileText, Image as ImageIcon, Printer, Pencil, Layers, Archive, Settings2, CheckSquare, Square, ChevronLeft, ChevronRight, Check, Copy } from 'lucide-react';
 
 function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [thumbnails, setThumbnails] = useState<string[]>([]);
   
   // State for batch management
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
@@ -17,24 +18,28 @@ function App() {
 
   const [editorLayoutWidth, setEditorLayoutWidth] = useState<number>(0);
   
-  // Output Configuration State
-  const [exportOptions, setExportOptions] = useState<ExportOptions>({
-      includePdf: false,
-      includeWebpFixed: false,
-      includeResize: true,
-      resizeScale: 50
-  });
+  // Output Configuration State - Now an Array for per-file settings
+  const [fileSettings, setFileSettings] = useState<ExportOptions[]>([]);
 
   const [fileNames, setFileNames] = useState<string[]>([]);
+  const [batchNameInput, setBatchNameInput] = useState("");
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [results, setResults] = useState<BatchResult[] | null>(null);
 
-  // Helper to determine if we are in "Resize Only" mode
-  const onlyResize = exportOptions.includeResize && !exportOptions.includePdf && !exportOptions.includeWebpFixed;
+  // Helper to get current options safely
+  const currentOptions = fileSettings[currentFileIndex] || {
+      includePdf: false,
+      includeWebpFixed: false,
+      includeResize: true,
+      resizeScale: 50
+  };
+
+  // Helper to determine if we are in "Resize Only" mode for the current image
+  const onlyResize = currentOptions.includeResize && !currentOptions.includePdf && !currentOptions.includeWebpFixed;
 
   // Helper to load image for preview and get dimensions
-  const loadImageForPreview = (file: File) => {
+  const loadMainPreview = (file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const src = e.target?.result as string;
@@ -63,28 +68,35 @@ function App() {
     const initialCrops = selectedFiles.map(() => ({ x: 0, y: 0, scale: 1 }));
     setCrops(initialCrops);
 
+    // Initialize settings for all files (Default: Resize 50% only)
+    const initialSettings = selectedFiles.map(() => ({
+        includePdf: false,
+        includeWebpFixed: false,
+        includeResize: true,
+        resizeScale: 50
+    }));
+    setFileSettings(initialSettings);
+
+    // Generate thumbnails
+    const newThumbnails = selectedFiles.map(file => URL.createObjectURL(file));
+    setThumbnails(newThumbnails);
+
     // Set first file active
     setCurrentFileIndex(0);
-    loadImageForPreview(selectedFiles[0]);
+    loadMainPreview(selectedFiles[0]);
     
     setResults(null);
   };
 
-  const handleNextImage = () => {
-    if (currentFileIndex < files.length - 1) {
-      const newIndex = currentFileIndex + 1;
-      setCurrentFileIndex(newIndex);
-      loadImageForPreview(files[newIndex]);
-    }
-  };
+  const switchFile = (index: number) => {
+      if (index >= 0 && index < files.length) {
+          setCurrentFileIndex(index);
+          loadMainPreview(files[index]);
+      }
+  }
 
-  const handlePrevImage = () => {
-    if (currentFileIndex > 0) {
-      const newIndex = currentFileIndex - 1;
-      setCurrentFileIndex(newIndex);
-      loadImageForPreview(files[newIndex]);
-    }
-  };
+  const handleNextImage = () => switchFile(currentFileIndex + 1);
+  const handlePrevImage = () => switchFile(currentFileIndex - 1);
 
   // Update crop for the CURRENT file index
   const handleCropChange = (newCrop: CropState) => {
@@ -100,14 +112,33 @@ function App() {
     updatedNames[index] = newName;
     setFileNames(updatedNames);
   };
+  
+  const applyBatchRename = () => {
+      if (!batchNameInput.trim()) return;
+      const newNames = files.map((_, idx) => `${batchNameInput.trim()}_${idx + 1}`);
+      setFileNames(newNames);
+  };
+
+  const applyCropToAll = () => {
+      const current = crops[currentFileIndex];
+      setCrops(files.map(() => ({ ...current })));
+      alert("Current position and scale applied to all images.");
+  };
+
+  const applySettingsToAll = () => {
+      const current = fileSettings[currentFileIndex];
+      setFileSettings(files.map(() => ({ ...current })));
+      alert("Export settings applied to all images.");
+  };
 
   const handleGenerate = async () => {
-    const isLayoutNeeded = !onlyResize;
+    // Check if any file has any output selected
+    const hasAnyOutput = fileSettings.some(s => s.includePdf || s.includeWebpFixed || s.includeResize);
+
+    if (!previewSrc || files.length === 0) return;
     
-    if (!previewSrc || files.length === 0 || (isLayoutNeeded && editorLayoutWidth === 0)) return;
-    
-    if (!exportOptions.includePdf && !exportOptions.includeWebpFixed && !exportOptions.includeResize) {
-        alert("Please select at least one output format.");
+    if (!hasAnyOutput) {
+        alert("Please select at least one output format for at least one image.");
         return;
     }
 
@@ -120,6 +151,12 @@ function App() {
         // Iterate through all files
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
+            const settings = fileSettings[i];
+
+            // Skip if no output selected for this file
+            if (!settings.includePdf && !settings.includeWebpFixed && !settings.includeResize) {
+                continue;
+            }
             
             let baseName = fileNames[i]?.trim();
             if (!baseName) {
@@ -136,15 +173,23 @@ function App() {
             });
 
             try {
-                // Use the SPECIFIC crop for this file index
+                // Use the SPECIFIC crop and settings for this file index
                 const fileCrop = crops[i];
                 
+                // For layout width, we might need a fallback if the user never viewed this specific image
+                // in non-resize mode. However, since logic passes editorLayoutWidth, 
+                // and that is updated by the CropEditor component, we assume reasonable defaults or
+                // that the user has previewed it. 
+                // To be safe, we use the current editorLayoutWidth or a safe fallback (e.g. 500)
+                // if it wasn't captured yet. Ideally, the service handles the ratio purely.
+                const layoutW = editorLayoutWidth || 500; 
+
                 const generatedFiles = await processExports(
                     img, 
                     fileCrop, 
-                    editorLayoutWidth, 
+                    layoutW, 
                     baseName, 
-                    exportOptions, 
+                    settings, 
                     file.size
                 );
                 
@@ -168,14 +213,20 @@ function App() {
   };
 
   const handleReset = () => {
+    // Revoke thumbnails
+    thumbnails.forEach(url => URL.revokeObjectURL(url));
+    setThumbnails([]);
+    
     setFiles([]);
     setPreviewSrc(null);
     setResults(null);
     setCrops([]);
+    setFileSettings([]);
     setCurrentFileIndex(0);
     setEditorLayoutWidth(0);
     setFileNames([]);
     setCurrentImgDims(null);
+    setBatchNameInput("");
   };
 
   const downloadFile = (file: GeneratedFile) => {
@@ -202,16 +253,31 @@ function App() {
   const isBatch = files.length > 1;
 
   const toggleOption = (key: keyof ExportOptions) => {
-      setExportOptions(prev => ({
-          ...prev,
-          [key]: !prev[key]
-      }));
+      setFileSettings(prev => {
+          const newSettings = [...prev];
+          newSettings[currentFileIndex] = {
+              ...newSettings[currentFileIndex],
+              [key]: !newSettings[currentFileIndex][key]
+          };
+          return newSettings;
+      });
+  };
+
+  const updateResizeScale = (val: number) => {
+    setFileSettings(prev => {
+        const newSettings = [...prev];
+        newSettings[currentFileIndex] = {
+            ...newSettings[currentFileIndex],
+            resizeScale: val
+        };
+        return newSettings;
+    });
   };
 
   // Calculate dynamic resize dimensions
   const getResizeDimensions = () => {
     if (!currentImgDims) return '';
-    const scale = exportOptions.resizeScale / 100;
+    const scale = currentOptions.resizeScale / 100;
     const w = Math.round(currentImgDims.width * scale);
     const h = Math.round(currentImgDims.height * scale);
     return `${w} x ${h} px`;
@@ -273,35 +339,20 @@ function App() {
         ) : !results ? (
           // STEP 2: EDIT
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 h-[calc(100vh-140px)] min-h-[600px] animate-in fade-in zoom-in-95 duration-300">
-            <div className="lg:col-span-2 flex flex-col h-full">
-               <div className="flex items-center justify-between mb-4">
+            <div className="lg:col-span-2 flex flex-col h-full gap-4">
+               {/* Top Bar */}
+               <div className="flex items-center justify-between">
                   <h3 className="text-lg font-semibold flex items-center gap-2 text-neutral-200">
                     <ImageIcon className="w-5 h-5 text-neutral-500" />
                     {onlyResize ? "Image Preview" : "Adjust Position & Scale"}
                   </h3>
                   
-                  {isBatch && (
-                    <div className="flex items-center gap-2 bg-neutral-900 rounded-full border border-neutral-800 p-1">
-                      <button 
-                        onClick={handlePrevImage}
-                        disabled={currentFileIndex === 0}
-                        className="p-1 hover:bg-neutral-800 text-neutral-400 disabled:opacity-30 rounded-full transition-colors"
-                      >
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                      <span className="text-xs font-mono text-neutral-400 w-16 text-center">
-                        {currentFileIndex + 1} / {files.length}
-                      </span>
-                      <button 
-                        onClick={handleNextImage}
-                        disabled={currentFileIndex === files.length - 1}
-                        className="p-1 hover:bg-neutral-800 text-neutral-400 disabled:opacity-30 rounded-full transition-colors"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
+                  {isBatch && !onlyResize && (
+                    <Button variant="secondary" size="sm" onClick={applyCropToAll} className="h-8 text-xs gap-1.5 px-3">
+                        <Copy className="w-3.5 h-3.5" /> Apply Position to All
+                    </Button>
                   )}
-
+                  
                   {!onlyResize && !isBatch && (
                     <span className="text-xs font-medium px-2 py-1 bg-neutral-900 rounded text-neutral-400 border border-neutral-800 ml-auto">
                         Previewing A1 (Full Bleed)
@@ -309,6 +360,7 @@ function App() {
                   )}
                </div>
                
+               {/* Main Editor Area */}
                <div className={`flex-1 min-h-0 ${onlyResize ? 'bg-neutral-900 rounded-xl overflow-hidden border border-neutral-800 flex items-center justify-center p-8' : ''}`}>
                   {onlyResize ? (
                       <div className="relative w-full h-full flex items-center justify-center">
@@ -323,6 +375,7 @@ function App() {
                       </div>
                   ) : (
                       <CropEditor 
+                        key={currentFileIndex}
                         imageSrc={previewSrc} 
                         onCropChange={handleCropChange}
                         onLayoutChange={setEditorLayoutWidth}
@@ -330,63 +383,97 @@ function App() {
                       />
                   )}
                </div>
+
+               {/* Mini Gallery Strip */}
+               {isBatch && (
+                   <div className="h-24 bg-neutral-900 rounded-xl border border-neutral-800 flex flex-col p-3">
+                       <div className="flex items-center justify-between mb-2 px-1">
+                           <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">
+                               Batch Gallery ({currentFileIndex + 1}/{files.length})
+                           </span>
+                       </div>
+                       <div className="flex-1 overflow-x-auto overflow-y-hidden flex items-center gap-3 custom-scrollbar pb-1">
+                           {thumbnails.map((thumb, idx) => (
+                               <button 
+                                key={idx}
+                                onClick={() => switchFile(idx)}
+                                className={`relative group flex-shrink-0 h-12 w-12 rounded-lg overflow-hidden border-2 transition-all ${
+                                    currentFileIndex === idx 
+                                    ? 'border-brand-500 ring-2 ring-brand-500/20' 
+                                    : 'border-neutral-700 hover:border-neutral-500 opacity-60 hover:opacity-100'
+                                }`}
+                               >
+                                   <img src={thumb} alt="" className="w-full h-full object-cover" />
+                                   
+                                   {/* Status Indicator Dot */}
+                                   <div className={`absolute top-0.5 right-0.5 w-2 h-2 rounded-full ${
+                                       fileSettings[idx].includePdf || fileSettings[idx].includeWebpFixed || fileSettings[idx].includeResize 
+                                       ? 'bg-emerald-500' 
+                                       : 'bg-neutral-600'
+                                   }`}></div>
+                               </button>
+                           ))}
+                       </div>
+                   </div>
+               )}
             </div>
 
+            {/* Sidebar Controls */}
             <div className="bg-neutral-900 rounded-2xl p-6 shadow-xl border border-neutral-800 h-fit lg:mt-11 flex flex-col">
-              <h3 className="text-lg font-bold mb-6 text-white">Export Settings</h3>
+              <h3 className="text-lg font-bold mb-6 text-white flex items-center justify-between">
+                  <span>Export Settings</span>
+                  {isBatch && (
+                      <button 
+                        onClick={applySettingsToAll}
+                        title="Apply current settings to all files"
+                        className="text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-2 py-1 rounded transition-colors border border-neutral-700"
+                      >
+                          Apply to All
+                      </button>
+                  )}
+              </h3>
               
               <div className="mb-6 flex-1 min-h-0 flex flex-col overflow-y-auto pr-1 custom-scrollbar">
                 
                 {/* --- File Naming Section --- */}
-                <div className="flex justify-between items-end mb-2">
-                    <label className="block text-xs font-semibold text-neutral-500 uppercase tracking-wider">
-                    {isBatch ? "File Names" : "Output Filename"}
+                <div className="mb-6">
+                    <label className="block text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">
+                        Filename
                     </label>
-                    {isBatch && (
-                        <span className="text-[10px] text-brand-400 font-medium bg-brand-500/10 px-1.5 py-0.5 rounded border border-brand-500/20">
-                            {files.length} Files
-                        </span>
-                    )}
-                </div>
 
-                {isBatch ? (
-                    <div className="space-y-3 mb-8">
-                        {fileNames.map((name, idx) => (
-                            <div key={idx} className={`group ${currentFileIndex === idx ? 'ring-1 ring-brand-500/30 rounded-lg p-1 -m-1 bg-brand-500/5' : ''}`}>
-                                <div className="flex justify-between mb-1">
-                                    <span className="text-[10px] text-neutral-500 truncate max-w-[80%] opacity-70">
-                                        Original: {files[idx].name}
-                                    </span>
-                                    <span className={`text-[10px] font-mono ${currentFileIndex === idx ? 'text-brand-500' : 'text-neutral-600'}`}>
-                                      #{idx + 1}
-                                    </span>
-                                </div>
-                                <div className="relative">
-                                    <input
-                                        type="text"
-                                        value={name}
-                                        onFocus={() => {
-                                          setCurrentFileIndex(idx);
-                                          loadImageForPreview(files[idx]);
-                                        }}
-                                        onChange={(e) => handleNameChange(idx, e.target.value)}
-                                        className="w-full bg-neutral-950 border border-neutral-700 text-neutral-100 font-medium text-sm rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent block pl-3 pr-8 py-2 placeholder-neutral-600 outline-none transition-all focus:bg-neutral-900"
-                                        placeholder={`Filename for image ${idx + 1}`}
-                                    />
-                                    <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-neutral-500">
-                                        <Pencil className="w-3.5 h-3.5 opacity-30" />
-                                    </div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                ) : (
-                    <div className="relative group mb-8">
+                    {/* Batch Rename Input */}
+                    {isBatch && (
+                         <div className="mb-3 p-3 bg-neutral-800/50 rounded-lg border border-neutral-800">
+                             <label className="block text-[10px] font-medium text-neutral-400 mb-1.5 uppercase tracking-wide">
+                                Batch Rename
+                             </label>
+                             <div className="flex gap-2">
+                                <input
+                                    type="text"
+                                    value={batchNameInput}
+                                    onChange={(e) => setBatchNameInput(e.target.value)}
+                                    className="flex-1 bg-neutral-950 border border-neutral-700 text-neutral-100 text-xs rounded px-2 py-1.5 focus:border-brand-500 outline-none"
+                                    placeholder="e.g. Summer_Collection"
+                                />
+                                <button 
+                                    onClick={applyBatchRename}
+                                    disabled={!batchNameInput}
+                                    className="px-3 py-1 bg-neutral-700 hover:bg-neutral-600 text-white text-xs font-medium rounded disabled:opacity-50 transition-colors"
+                                >
+                                    Apply
+                                </button>
+                             </div>
+                             <p className="text-[10px] text-neutral-500 mt-1.5">
+                                 Will become: {batchNameInput ? batchNameInput : "name"}_1, {batchNameInput ? batchNameInput : "name"}_2...
+                             </p>
+                         </div>
+                    )}
+
+                    <div className="relative group">
                         <input
-                            id="filename"
                             type="text"
-                            value={fileNames[0] || ""}
-                            onChange={(e) => handleNameChange(0, e.target.value)}
+                            value={fileNames[currentFileIndex] || ""}
+                            onChange={(e) => handleNameChange(currentFileIndex, e.target.value)}
                             className="w-full bg-neutral-950 border border-neutral-700 text-neutral-100 font-medium text-sm rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent block w-full pl-3 pr-10 py-2.5 placeholder-neutral-600 outline-none transition-all"
                             placeholder="Enter file name"
                         />
@@ -394,7 +481,7 @@ function App() {
                             <Pencil className="w-4 h-4 opacity-50" />
                         </div>
                     </div>
-                )}
+                </div>
                 
                 <div className="h-px bg-neutral-800 mb-6"></div>
 
@@ -412,8 +499,8 @@ function App() {
                         className="flex items-start gap-3 p-3 rounded-lg border border-neutral-800 bg-neutral-900/50 hover:bg-neutral-800 cursor-pointer transition-colors"
                         onClick={() => toggleOption('includePdf')}
                     >
-                        <div className={`mt-0.5 ${exportOptions.includePdf ? 'text-brand-500' : 'text-neutral-600'}`}>
-                            {exportOptions.includePdf ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
+                        <div className={`mt-0.5 ${currentOptions.includePdf ? 'text-brand-500' : 'text-neutral-600'}`}>
+                            {currentOptions.includePdf ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
                         </div>
                         <div>
                             <p className="text-sm font-medium text-neutral-200">Print Ready PDFs</p>
@@ -426,8 +513,8 @@ function App() {
                         className="flex items-start gap-3 p-3 rounded-lg border border-neutral-800 bg-neutral-900/50 hover:bg-neutral-800 cursor-pointer transition-colors"
                         onClick={() => toggleOption('includeWebpFixed')}
                     >
-                         <div className={`mt-0.5 ${exportOptions.includeWebpFixed ? 'text-brand-500' : 'text-neutral-600'}`}>
-                            {exportOptions.includeWebpFixed ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
+                         <div className={`mt-0.5 ${currentOptions.includeWebpFixed ? 'text-brand-500' : 'text-neutral-600'}`}>
+                            {currentOptions.includeWebpFixed ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
                         </div>
                         <div>
                             <p className="text-sm font-medium text-neutral-200">WebP Thumbnail</p>
@@ -437,40 +524,56 @@ function App() {
 
                     {/* Option 3: Resize */}
                     <div 
-                        className={`flex flex-col p-3 rounded-lg border border-neutral-800 bg-neutral-900/50 transition-all ${exportOptions.includeResize ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : 'hover:bg-neutral-800'}`}
+                        className={`flex flex-col p-3 rounded-lg border border-neutral-800 bg-neutral-900/50 transition-all ${currentOptions.includeResize ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : 'hover:bg-neutral-800'}`}
                     >
                         <div 
                             className="flex items-start gap-3 cursor-pointer"
                             onClick={() => toggleOption('includeResize')}
                         >
-                            <div className={`mt-0.5 ${exportOptions.includeResize ? 'text-brand-500' : 'text-neutral-600'}`}>
-                                {exportOptions.includeResize ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
+                            <div className={`mt-0.5 ${currentOptions.includeResize ? 'text-brand-500' : 'text-neutral-600'}`}>
+                                {currentOptions.includeResize ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
                             </div>
-                            <div>
+                            <div className="flex-1">
                                 <p className="text-sm font-medium text-neutral-200">Resize Original</p>
                                 <p className="text-xs text-neutral-500">Scale the original image. Ignores crop.</p>
                             </div>
                         </div>
                         
                         {/* Expandable Slider Area */}
-                        {exportOptions.includeResize && (
+                        {currentOptions.includeResize && (
                             <div className="mt-4 pl-8 pr-1 animate-in fade-in slide-in-from-top-1 duration-200">
                                 <div className="flex justify-between items-center mb-2">
                                     <span className="text-xs text-neutral-400">Scale Percentage</span>
                                     <div className="flex items-center gap-2">
                                       <span className="text-[10px] text-neutral-500 font-mono">{getResizeDimensions()}</span>
-                                      <span className="text-xs font-mono font-medium text-brand-400">{exportOptions.resizeScale}%</span>
+                                      <span className="text-xs font-mono font-medium text-brand-400">{currentOptions.resizeScale}%</span>
                                     </div>
                                 </div>
-                                <input 
-                                    type="range" 
-                                    min="1" 
-                                    max="100" 
-                                    value={exportOptions.resizeScale}
-                                    onChange={(e) => setExportOptions(prev => ({...prev, resizeScale: parseInt(e.target.value)}))}
-                                    className="w-full h-2 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-brand-500"
-                                />
-                                <div className="mt-2 text-[10px] text-neutral-500">
+                                <div className="flex items-center gap-2">
+                                    <input 
+                                        type="range" 
+                                        min="1" 
+                                        max="100" 
+                                        value={currentOptions.resizeScale}
+                                        onChange={(e) => updateResizeScale(parseInt(e.target.value))}
+                                        className="w-full h-2 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-brand-500"
+                                    />
+                                </div>
+                                
+                                {isBatch && (
+                                    <button 
+                                        onClick={() => {
+                                            const scale = currentOptions.resizeScale;
+                                            setFileSettings(prev => prev.map(s => ({...s, resizeScale: scale})));
+                                            alert(`Applied ${scale}% resize scale to all images.`);
+                                        }}
+                                        className="text-[10px] text-brand-400 mt-2 hover:text-brand-300 flex items-center gap-1"
+                                    >
+                                        <Copy className="w-3 h-3" /> Apply {currentOptions.resizeScale}% scale to all
+                                    </button>
+                                )}
+                                
+                                <div className="mt-1 text-[10px] text-neutral-500">
                                     Output: WebP (Lossy 85)
                                 </div>
                             </div>
@@ -486,7 +589,7 @@ function App() {
                 size="lg"
                 isLoading={isProcessing}
               >
-                {isBatch ? `Generate ${files.length} Sets` : 'Generate Files'}
+                {isBatch ? `Generate Batch` : 'Generate Files'}
               </Button>
             </div>
           </div>
@@ -499,7 +602,7 @@ function App() {
               </div>
               <h2 className="text-3xl font-bold text-white">Conversion Complete!</h2>
               <p className="text-neutral-400 mt-2">
-                  {results.length} image{results.length > 1 ? 's' : ''} processed successfully.
+                  Processed files successfully.
               </p>
             </div>
 
@@ -524,33 +627,37 @@ function App() {
                     </div>
                     {/* Individual Files */}
                     <div className="divide-y divide-neutral-800/50">
-                        {batch.files.map((file, fIdx) => (
-                            <div key={fIdx} className="px-6 py-3 flex items-center justify-between hover:bg-neutral-800/50 transition-colors group">
-                                <div className="flex items-center gap-3">
-                                    <div className={
-                                    `w-8 h-8 rounded flex items-center justify-center text-xs font-bold
-                                    ${file.type === 'pdf' 
-                                        ? 'bg-rose-500/10 text-rose-400' 
-                                        : 'bg-sky-500/10 text-sky-400'}`
-                                    }>
-                                    {file.type === 'pdf' ? 'PDF' : 'IMG'}
+                        {batch.files.length > 0 ? (
+                            batch.files.map((file, fIdx) => (
+                                <div key={fIdx} className="px-6 py-3 flex items-center justify-between hover:bg-neutral-800/50 transition-colors group">
+                                    <div className="flex items-center gap-3">
+                                        <div className={
+                                        `w-8 h-8 rounded flex items-center justify-center text-xs font-bold
+                                        ${file.type === 'pdf' 
+                                            ? 'bg-rose-500/10 text-rose-400' 
+                                            : 'bg-sky-500/10 text-sky-400'}`
+                                        }>
+                                        {file.type === 'pdf' ? 'PDF' : 'IMG'}
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="text-sm text-neutral-300 font-medium">
+                                                {/* Pretty display name from filename logic */}
+                                                {file.name.replace(batch.originalName + '_', '')}
+                                            </span>
+                                            <span className="text-xs text-neutral-500">{file.dimensions}</span>
+                                            {file.sizeDisplay && (
+                                                <span className="text-[10px] text-emerald-400 font-medium mt-0.5">{file.sizeDisplay}</span>
+                                            )}
+                                        </div>
                                     </div>
-                                    <div className="flex flex-col">
-                                        <span className="text-sm text-neutral-300 font-medium">
-                                            {/* Pretty display name from filename logic */}
-                                            {file.name.replace(batch.originalName + '_', '')}
-                                        </span>
-                                        <span className="text-xs text-neutral-500">{file.dimensions}</span>
-                                        {file.sizeDisplay && (
-                                            <span className="text-[10px] text-emerald-400 font-medium mt-0.5">{file.sizeDisplay}</span>
-                                        )}
-                                    </div>
+                                    <Button variant="ghost" size="sm" onClick={() => downloadFile(file)} className="h-8 w-8 p-0">
+                                        <Download className="w-4 h-4" />
+                                    </Button>
                                 </div>
-                                <Button variant="ghost" size="sm" onClick={() => downloadFile(file)} className="h-8 w-8 p-0">
-                                    <Download className="w-4 h-4" />
-                                </Button>
-                            </div>
-                        ))}
+                            ))
+                        ) : (
+                            <div className="px-6 py-3 text-xs text-neutral-600 italic">No outputs generated for this file.</div>
+                        )}
                     </div>
                 </div>
               ))}

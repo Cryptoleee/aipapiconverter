@@ -24,9 +24,10 @@ export const CropEditor: React.FC<CropEditorProps> = ({ imageSrc, onCropChange, 
     img.src = imageSrc;
     img.onload = () => {
       setImage(img);
-      setCrop({ x: 0, y: 0, scale: 1 });
+      // Initialize with the stored crop state for this image, not a reset
+      setCrop(initialCrop);
     };
-  }, [imageSrc]);
+  }, [imageSrc]); // Only reload if source changes. We rely on key={} in parent to handle file switches cleanly.
 
   useEffect(() => {
     if (viewLayout) {
